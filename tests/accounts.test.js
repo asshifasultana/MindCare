@@ -11,10 +11,11 @@ import request from "supertest";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 
 let app;
 let prisma;
@@ -25,6 +26,27 @@ const account = {
   email: "asshifa@example.com",
   password: "Learning123!",
 };
+
+function applyTestMigrations(databasePath) {
+  const migrationsPath = fileURLToPath(
+    new URL("../prisma/migrations/", import.meta.url)
+  );
+  const migrationNames = readdirSync(migrationsPath, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+
+  // Run the migration SQL on the temporary database inside the test worker.
+  const database = new DatabaseSync(databasePath);
+  try {
+    for (const name of migrationNames) {
+      const sql = readFileSync(path.join(migrationsPath, name, "migration.sql"), "utf8");
+      database.exec(sql);
+    }
+  } finally {
+    database.close();
+  }
+}
 
 beforeAll(async () => {
   testDirectory = mkdtempSync(
@@ -40,19 +62,7 @@ beforeAll(async () => {
   process.env.JWT_SECRET =
     "test-only-mindcare-secret-at-least-32-characters";
 
-  execFileSync(
-    process.execPath,
-    [
-      path.resolve("node_modules/prisma/build/index.js"),
-      "migrate",
-      "deploy",
-    ],
-    {
-      env: process.env,
-      stdio: "pipe",
-    }
-  );
-
+  applyTestMigrations(databasePath);
   ({ app } = await import("../src/app.js"));
   ({ prisma } = await import("../src/db.js"));
 }, 60000);
@@ -394,5 +404,226 @@ describe("Account API integration tests", () => {
       .get("/api/users/me")
       .auth(token, { type: "bearer" })
       .expect(401);
+  });
+});
+
+describe("Counselor profile API integration tests", () => {
+  const directory = "/api/counselor-profiles";
+  const ownProfile = "/api/counselor-profiles/me";
+  const profile = {
+    bio: "A sample counselor profile.",
+    specialty: "Stress management",
+    yearsOfExperience: 5,
+  };
+
+  it("creates, lists, reads, updates, and deletes a profile by ID", async () => {
+    const counselor = await registerAndLogin({
+      ...account,
+      role: "COUNSELOR",
+    });
+    const other = await registerAndLogin({
+      ...account,
+      name: "Other Counselor",
+      email: "other-counselor@example.com",
+      role: "COUNSELOR",
+    });
+
+    for (const token of [counselor.token, other.token]) {
+      await request(app)
+        .post(directory)
+        .auth(token, { type: "bearer" })
+        .send(profile)
+        .expect(201);
+    }
+
+    await request(app)
+      .post(directory)
+      .auth(counselor.token, { type: "bearer" })
+      .send(profile)
+      .expect(409, { message: "This counselor already has a profile." });
+
+    const matching = await request(app)
+      .get(directory)
+      .query({ search: `  ${account.name}  ` })
+      .expect(200);
+
+    expect(matching.body.profiles).toHaveLength(1);
+    const [listedProfile] = matching.body.profiles;
+    expect(listedProfile.user).toEqual({ name: account.name });
+
+    const profileById = `${directory}/${listedProfile.id}`;
+    const detail = await request(app).get(profileById).expect(200);
+    expect(detail.body.profile).toEqual(listedProfile);
+
+    await request(app)
+      .patch(profileById)
+      .auth(other.token, { type: "bearer" })
+      .send({ specialty: "Attempted change" })
+      .expect(403);
+    await request(app)
+      .delete(profileById)
+      .auth(other.token, { type: "bearer" })
+      .expect(403);
+    await request(app).get(profileById).expect(200, detail.body);
+
+    const updated = await request(app)
+      .patch(profileById)
+      .auth(counselor.token, { type: "bearer" })
+      .send({ specialty: "Sleep support" })
+      .expect(200);
+
+    expect(updated.body.profile).toMatchObject({
+      ...profile,
+      userId: counselor.user.id,
+      specialty: "Sleep support",
+    });
+
+    const matchingSpecialty = await request(app)
+      .get(directory)
+      .query({ search: "Sleep" })
+      .expect(200);
+    expect(matchingSpecialty.body.profiles.map(({ userId }) => userId))
+      .toEqual([counselor.user.id]);
+
+    await request(app)
+      .delete(profileById)
+      .auth(counselor.token, { type: "bearer" })
+      .expect(204, "");
+
+    const notFound = { message: "Counselor profile not found." };
+    await request(app).get(profileById).expect(404, notFound);
+    await request(app)
+      .patch(profileById)
+      .auth(counselor.token, { type: "bearer" })
+      .send({ specialty: "Sleep support" })
+      .expect(404, notFound);
+    await request(app)
+      .delete(profileById)
+      .auth(counselor.token, { type: "bearer" })
+      .expect(404, notFound);
+
+    const remaining = await request(app).get(directory).expect(200);
+    expect(remaining.body.profiles).toHaveLength(1);
+    expect(remaining.body.profiles[0]).toMatchObject({
+      ...profile,
+      userId: other.user.id,
+    });
+
+    await request(app)
+      .get("/api/users/me")
+      .auth(counselor.token, { type: "bearer" })
+      .expect(200);
+  });
+
+  it("requires a counselor login to create, update, or delete a profile", async () => {
+    const { token } = await registerAndLogin();
+
+    await request(app).post(directory).send(profile).expect(401);
+    await request(app)
+      .post(directory)
+      .auth(token, { type: "bearer" })
+      .send(profile)
+      .expect(403);
+
+    const profileById = `${directory}/missing-profile`;
+    for (const method of ["patch", "delete"]) {
+      await request(app)[method](profileById).expect(401);
+      await request(app)[method](profileById)
+        .auth(token, { type: "bearer" })
+        .expect(403);
+    }
+  });
+
+  it("rejects invalid fields when creating a profile", async () => {
+    const { token } = await registerAndLogin({
+      ...account,
+      role: "COUNSELOR",
+    });
+
+    for (const fields of [
+      { bio: "   " },
+      { specialty: "" },
+      { yearsOfExperience: -1 },
+      { yearsOfExperience: 1.5 },
+      { yearsOfExperience: 2_147_483_648 },
+      { userId: "another-user" },
+    ]) {
+      await request(app)
+        .post(directory)
+        .auth(token, { type: "bearer" })
+        .send({ ...profile, ...fields })
+        .expect(400);
+    }
+
+    await request(app).get(directory).expect(200, { profiles: [] });
+  });
+
+  it("validates profile updates and reports missing profiles", async () => {
+    const { token } = await registerAndLogin({
+      ...account,
+      role: "COUNSELOR",
+    });
+
+    for (const body of [{}, { userId: "other-user" }, { yearsOfExperience: -1 }]) {
+      await request(app)
+        .patch(ownProfile)
+        .auth(token, { type: "bearer" })
+        .send(body)
+        .expect(400);
+    }
+
+    const notFound = { message: "Counselor profile not found." };
+    await request(app)
+      .patch(ownProfile)
+      .auth(token, { type: "bearer" })
+      .send({ bio: "Updated bio" })
+      .expect(404, notFound);
+    await request(app)
+      .delete(ownProfile)
+      .auth(token, { type: "bearer" })
+      .expect(404, notFound);
+  });
+
+  it("still accepts /me for updating and deleting one's own profile", async () => {
+    const { token } = await registerAndLogin({
+      ...account,
+      role: "COUNSELOR",
+    });
+
+    await request(app)
+      .post(directory)
+      .auth(token, { type: "bearer" })
+      .send(profile)
+      .expect(201);
+    const updated = await request(app)
+      .patch(ownProfile)
+      .auth(token, { type: "bearer" })
+      .send({ yearsOfExperience: 0 })
+      .expect(200);
+    expect(updated.body.profile.yearsOfExperience).toBe(0);
+    await request(app)
+      .delete(ownProfile)
+      .auth(token, { type: "bearer" })
+      .expect(204, "");
+  });
+
+  it("deletes a profile when its owner deletes their account", async () => {
+    const { token } = await registerAndLogin({
+      ...account,
+      role: "COUNSELOR",
+    });
+
+    const created = await request(app)
+      .post(directory)
+      .auth(token, { type: "bearer" })
+      .send(profile)
+      .expect(201);
+    const profileById = `${directory}/${created.body.profile.id}`;
+    await request(app).get(profileById).expect(200);
+    await request(app)
+      .delete("/api/users/me")
+      .auth(token, { type: "bearer" })
+      .expect(204, "");
+    await request(app).get(profileById).expect(404);
   });
 });
