@@ -2,6 +2,7 @@ import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
+import { fileURLToPath } from "node:url";
 
 import { prisma, publicUserFields } from "./db.js";
 import { authenticate, jwtSecret } from "./auth.js";
@@ -9,6 +10,10 @@ import { authenticate, jwtSecret } from "./auth.js";
 export const app = express();
 
 app.use(express.json({ limit: "16kb" }));
+
+// Serve the browser interface from the same origin as the API.
+const publicDirectory = fileURLToPath(new URL("../public/", import.meta.url));
+app.use(express.static(publicDirectory));
 
 // ---------- Validation ----------
 
