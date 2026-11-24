@@ -14,4 +14,16 @@ model User {
   passwordHash String
   role         String   @default("CLIENT")
   createdAt    DateTime @default(now())
+
+  counselorProfile CounselorProfile?
+}
+
+model CounselorProfile {
+  id                String @id @default(uuid())
+  userId            String @unique
+  bio               String
+  specialty         String
+  yearsOfExperience Int
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
