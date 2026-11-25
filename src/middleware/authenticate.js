@@ -1,14 +1,6 @@
-import "dotenv/config";
 import jwt from "jsonwebtoken";
-import { prisma } from "./db.js";
-
-export const jwtSecret = process.env.JWT_SECRET;
-
-if (!jwtSecret || jwtSecret.length < 32) {
-  throw new Error(
-    "JWT_SECRET must contain at least 32 characters."
-  );
-}
+import { jwtSecret } from "../config/auth.js";
+import { findAuthenticatedUserById } from "../repositories/user.repository.js";
 
 export async function authenticate(req, res, next) {
   const authorization = req.get("authorization") ?? "";
@@ -41,13 +33,7 @@ export async function authenticate(req, res, next) {
     });
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: payload.sub },
-    select: {
-      id: true,
-      role: true,
-    },
-  });
+  const user = await findAuthenticatedUserById(payload.sub);
 
   if (!user) {
     return res.status(401).json({

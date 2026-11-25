@@ -54,7 +54,7 @@ beforeAll(async () => {
   );
 
   ({ app } = await import("../src/app.js"));
-  ({ prisma } = await import("../src/db.js"));
+  ({ prisma } = await import("../src/config/database.js"));
 }, 60000);
 
 beforeEach(async () => {
