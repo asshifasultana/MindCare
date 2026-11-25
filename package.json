@@ -3,14 +3,14 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
- "type": "module",
-"scripts": {
-  "dev": "node --watch src/server.js",
-  "start": "node src/server.js",
-  "db:generate": "prisma generate",
-  "db:setup": "prisma migrate deploy",
-  "test": "vitest run"
-},
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "db:generate": "prisma generate",
+    "db:setup": "node scripts/migrate.js",
+    "test": "vitest run"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/asshifasultana/MindCare.git"
@@ -33,6 +33,6 @@
   "devDependencies": {
     "prisma": "^6.19.0",
     "supertest": "^7.3.2",
-    "vitest": "^3.2.7"
+    "vitest": "^5.1.1"
   }
 }
