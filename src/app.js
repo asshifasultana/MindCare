@@ -1,5 +1,6 @@
 import express from "express";
 import { z } from "zod";
+import { fileURLToPath } from "node:url";
 
 import { accountsRouter } from "./accounts.js";
 import { counselorProfilesRouter } from "./counselorProfiles.js";
@@ -7,6 +8,10 @@ import { counselorProfilesRouter } from "./counselorProfiles.js";
 export const app = express();
 
 app.use(express.json({ limit: "16kb" }));
+
+// Serve the browser interface from the same origin as the API.
+const publicDirectory = fileURLToPath(new URL("../public/", import.meta.url));
+app.use(express.static(publicDirectory));
 
 // ---------- API routes ----------
 
